@@ -1,23 +1,15 @@
-import requests
-import time
+import asyncio
+from playwright.async_api import async_playwright
 
 INPUT_FILE = "ids.txt"
 OUTPUT_FILE = "emissoes_2024.csv"
 
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
 
-HEADERS = {
-    "Accept": "text/plain",
-    "Content-Type": "application/json-patch+json",
-    "Origin": "https://registropublicodeemissoes.fgv.br",
-    "Referer": "https://registropublicodeemissoes.fgv.br/",
-    "User-Agent": "Mozilla/5.0"
-}
 
-
-def extrair_emissoes(data_json):
+def extrair_emissoes(data):
     try:
-        items = data_json["result"]["items"]
+        items = data["result"]["items"]
 
         e1 = e2 = e3 = 0
 
@@ -39,59 +31,61 @@ def extrair_emissoes(data_json):
         return None, None, None, None
 
 
-def fazer_request(org_id, tentativas=3):
-    for tentativa in range(tentativas):
-        try:
-            payload = {"organizationId": int(org_id)}
+async def main():
+    print("LENDO IDS...\n")
 
-            response = requests.post(
-                URL,
-                json=payload,
-                headers=HEADERS,
-                timeout=30
-            )
+    with open(INPUT_FILE) as f:
+        ids = [i.strip() for i in f if i.strip()]
 
-            if response.status_code == 200:
-                return response.json()
-
-        except Exception as e:
-            print(f"⚠️ erro tentativa {tentativa+1} para {org_id}")
-
-        time.sleep(2)
-
-    return None
-
-
-def main():
-    print("LENDO IDs...\n")
-
-    with open(INPUT_FILE, "r") as f:
-        ids = [linha.strip() for linha in f if linha.strip()]
-
-    total_ids = len(ids)
     resultados = []
 
-    for i, org_id in enumerate(ids):
-        org_id = org_id.zfill(4)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
 
-        print(f"→ {org_id} ({i+1}/{total_ids})")
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+        )
 
-        data = fazer_request(org_id)
+        request = context.request
 
-        if not data or not data.get("success"):
-            print("✖ falha na API")
-            continue
+        for i, org_id in enumerate(ids):
+            org_id = org_id.zfill(4)
 
-        e1, e2, e3, total = extrair_emissoes(data)
+            print(f"→ {org_id} ({i+1}/{len(ids)})")
 
-        if total:
-            print(f"✔ total: {total:,.2f}")
-        else:
-            print("– sem dados 2024")
+            try:
+                response = await request.post(
+                    URL,
+                    data={
+                        "organizationId": int(org_id)
+                    }
+                )
 
-        resultados.append(f"{org_id},{e1},{e2},{e3},{total}")
+                if response.status != 200:
+                    print("✖ erro HTTP")
+                    continue
 
-        time.sleep(0.5)
+                data = await response.json()
+
+                if not data.get("success"):
+                    print("✖ sem sucesso")
+                    continue
+
+                e1, e2, e3, total = extrair_emissoes(data)
+
+                if total:
+                    print(f"✔ total: {total:,.2f}")
+                else:
+                    print("– sem dados")
+
+                resultados.append(f"{org_id},{e1},{e2},{e3},{total}")
+
+                await asyncio.sleep(0.5)
+
+            except Exception as e:
+                print(f"Erro {org_id}: {e}")
+
+        await browser.close()
 
     print("\nSALVANDO...")
 
@@ -102,5 +96,4 @@ def main():
     print("FINALIZADO 🚀")
 
 
-if __name__ == "__main__":
-    main()
+asyncio.run(main())
