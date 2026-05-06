@@ -1,101 +1,122 @@
-import asyncio
+import requests
+import time
+import csv
 import pandas as pd
-from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
 
-INPUT_FILE = "IDs para puxar emissões totais.xlsx"
+# ========================
+# CONFIG
+# ========================
+INPUT_FILE = "ids.xlsx"
 OUTPUT_FILE = "emissoes_2024.csv"
+SLEEP = 0.3
 
-MAX_RETRIES = 3
+BASE_URL = "https://registropublicodeemissoes.fgv.br/estatistica/estatistica-participantes/{}"
 
+# ========================
+# FUNÇÕES
+# ========================
 
-def parse_numero(valor):
-    if not valor:
-        return 0.0
-    valor = valor.replace(".", "").replace(",", ".").strip()
+def parse_numero_br(valor):
     try:
-        return float(valor)
+        return float(valor.replace(".", "").replace(",", ".").strip())
     except:
-        return 0.0
+        return None
 
 
-async def extrair_dados(page, id_participante):
-    url = f"https://registropublicodeemissoes.fgv.br/estatistica/estatistica-participantes/{id_participante}"
+def extrair_emissoes(html):
+    soup = BeautifulSoup(html, "html.parser")
 
-    for tentativa in range(MAX_RETRIES):
-        try:
-            await page.goto(url, timeout=60000)
-            await page.wait_for_selector("table", timeout=15000)
+    tabela = soup.find("div", class_="container-table")
+    if not tabela:
+        return None
 
-            anos = await page.locator("table thead tr:nth-child(1) td b").all_text_contents()
+    linhas = tabela.find_all("tr")
 
-            if "2024" not in anos:
-                print(f"⚠️ {id_participante} sem 2024")
-                return None
+    anos = []
+    escopo1 = []
+    escopo2 = []
+    escopo3 = []
 
-            idx_2024 = anos.index("2024")
+    for linha in linhas:
+        texto = linha.get_text(strip=True)
 
-            escopo1 = await page.locator("tr.escopo1-color td").all_text_contents()
-            escopo2 = await page.locator("tr.escopo2-color td").all_text_contents()
-            escopo3 = await page.locator("tr.escopo3-color td").all_text_contents()
+        if "Ano" in texto:
+            anos = [td.get_text(strip=True) for td in linha.find_all("td")]
 
-            e1 = parse_numero(escopo1[idx_2024]) if idx_2024 < len(escopo1) else 0
-            e3 = parse_numero(escopo3[idx_2024]) if idx_2024 < len(escopo3) else 0
+        elif "Escopo 1" in texto:
+            escopo1 = [td.get_text(strip=True) for td in linha.find_all("td")]
 
-            # escopo 2 → pegar maior valor possível (segurança futura)
-            e2 = 0
-            if idx_2024 < len(escopo2):
-                e2 = parse_numero(escopo2[idx_2024])
+        elif "Escopo 2" in texto:
+            escopo2 = [td.get_text(strip=True) for td in linha.find_all("td")]
 
-            total = e1 + e2 + e3
+        elif "Escopo   3" in texto or "Escopo 3" in texto:
+            escopo3 = [td.get_text(strip=True) for td in linha.find_all("td")]
 
-            return {
-                "id": id_participante,
-                "escopo1_2024": e1,
-                "escopo2_2024": e2,
-                "escopo3_2024": e3,
-                "total_2024": total
-            }
+    if "2024" not in anos:
+        return None
 
-        except Exception as e:
-            print(f"❌ Erro {id_participante} (tentativa {tentativa+1}): {e}")
-            await asyncio.sleep(2)
+    idx = anos.index("2024")
 
-    return None
+    try:
+        s1 = parse_numero_br(escopo1[idx]) if idx < len(escopo1) else None
+        s2 = parse_numero_br(escopo2[idx]) if idx < len(escopo2) else None
+        s3 = parse_numero_br(escopo3[idx]) if idx < len(escopo3) else None
+
+        total = sum(filter(None, [s1, s2, s3]))
+
+        return s1, s2, s3, total
+
+    except:
+        return None
 
 
-async def main():
-    df_ids = pd.read_excel(INPUT_FILE)
+# ========================
+# MAIN
+# ========================
 
-    ids = df_ids.iloc[:, 0].astype(str).str.zfill(4).tolist()
+def main():
+    print("\nLENDO IDs DO EXCEL...\n")
 
-    resultados = []
+    df = pd.read_excel(INPUT_FILE)
 
-    async with async_playwright() as p:
-        print("🚀 Iniciando navegador...")
+    if "ID" not in df.columns:
+        raise Exception("O Excel precisa ter uma coluna chamada 'ID'")
 
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+    ids = df["ID"].astype(str).str.zfill(4).tolist()
 
-        for i, id_ in enumerate(ids):
-            print(f"➡️ {i+1}/{len(ids)} | ID {id_}")
+    print(f"Total de IDs: {len(ids)}\n")
 
-            dados = await extrair_dados(page, id_)
+    with open(OUTPUT_FILE, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["ID", "Escopo1_2024", "Escopo2_2024", "Escopo3_2024", "Total_2024"])
 
-            if dados:
-                resultados.append(dados)
+        for idx, participant_id in enumerate(ids, start=1):
+            url = BASE_URL.format(participant_id)
 
-            # pequena pausa para evitar bloqueio
-            await asyncio.sleep(0.5)
+            try:
+                response = requests.get(url, timeout=10)
 
-        await browser.close()
+                if response.status_code != 200:
+                    print(f"✖ {participant_id} sem página")
+                    continue
 
-    df_final = pd.DataFrame(resultados)
-    df_final.to_csv(OUTPUT_FILE, index=False)
+                resultado = extrair_emissoes(response.text)
 
-    print("\n✅ FINALIZADO")
-    print(f"📄 Arquivo: {OUTPUT_FILE}")
-    print(f"📊 Total coletado: {len(df_final)} registros")
+                if resultado:
+                    s1, s2, s3, total = resultado
+                    writer.writerow([participant_id, s1, s2, s3, total])
+                    print(f"✔ {participant_id} OK ({idx}/{len(ids)})")
+                else:
+                    print(f"– {participant_id} sem dados 2024 ({idx}/{len(ids)})")
+
+            except Exception as e:
+                print(f"Erro {participant_id}: {e}")
+
+            time.sleep(SLEEP)
+
+    print(f"\nFINALIZADO → {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
