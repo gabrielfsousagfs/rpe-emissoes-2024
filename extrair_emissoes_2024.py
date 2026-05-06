@@ -1,28 +1,25 @@
 import pandas as pd
-import requests
 import time
+from curl_cffi import requests  # 🔥 IMPORTANTE
 
 INPUT_FILE = "ids.xlsx"
 OUTPUT_FILE = "emissoes_2024.xlsx"
 
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "application/json",
-    "Content-Type": "application/x-www-form-urlencoded",
-    "Origin": "https://registropublicodeemissoes.fgv.br",
-    "Referer": "https://registropublicodeemissoes.fgv.br/"
-}
-
 def extrair_dados(org_id):
     try:
         response = requests.post(
             URL,
-            data=f"organizationId={int(org_id)}",  # 🔥 FORMATO CORRETO
-            headers=HEADERS,
-            timeout=30,
-            verify=False  # evita erro SSL no GitHub
+            impersonate="chrome",  # 🔥 resolve handshake
+            headers={
+                "Accept": "text/plain",
+                "Content-Type": "application/json-patch+json",
+                "Origin": "https://registropublicodeemissoes.fgv.br",
+                "Referer": "https://registropublicodeemissoes.fgv.br/"
+            },
+            json={"organizationId": int(org_id)},
+            timeout=30
         )
 
         if response.status_code != 200:
@@ -76,7 +73,7 @@ def extrair_dados(org_id):
 
 
 def main():
-    print("📥 LENDO IDs DO EXCEL...\n")
+    print("📥 LENDO IDs...\n")
 
     df = pd.read_excel(INPUT_FILE)
     ids = df.iloc[:, 0].astype(str).str.zfill(4).tolist()
@@ -91,22 +88,19 @@ def main():
 
         if dados:
             print(f"✔ {org_id} OK")
-
             resultados.append({
                 "ID": org_id,
                 **dados
             })
         else:
-            print(f"– {org_id} sem dados 2024")
+            print(f"– {org_id} sem dados")
 
-        time.sleep(0.3)
-
-    print("\n💾 SALVANDO RESULTADO...")
+        time.sleep(0.4)
 
     df_final = pd.DataFrame(resultados)
     df_final.to_excel(OUTPUT_FILE, index=False)
 
-    print(f"\n✅ FINALIZADO: {OUTPUT_FILE}")
+    print("\n✅ FINALIZADO!")
 
 
 if __name__ == "__main__":
