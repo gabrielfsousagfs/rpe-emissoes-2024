@@ -8,25 +8,28 @@ OUTPUT_FILE = "emissoes_2024.xlsx"
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
 
 HEADERS = {
-    "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Origin": "https://registropublicodeemissoes.fgv.br",
+    "Referer": "https://registropublicodeemissoes.fgv.br/"
 }
 
 def extrair_dados(org_id):
-    payload = {
-        "organizationId": int(org_id)
-    }
-
     try:
-        response = requests.post(URL, json=payload, headers=HEADERS, timeout=30)
+        response = requests.post(
+            URL,
+            data=f"organizationId={int(org_id)}",  # 🔥 FORMATO CORRETO
+            headers=HEADERS,
+            timeout=30,
+            verify=False  # evita erro SSL no GitHub
+        )
 
         if response.status_code != 200:
             print(f"✖ {org_id} status {response.status_code}")
             return None
 
         data = response.json()
-
-        # Caminho esperado da resposta
         charts = data.get("result", {}).get("charts", [])
 
         if not charts:
@@ -39,10 +42,9 @@ def extrair_dados(org_id):
         for chart in charts:
             name = chart.get("name", "").lower()
 
-            series = chart.get("series", [])
-
-            for serie in series:
+            for serie in chart.get("series", []):
                 for point in serie.get("data", []):
+
                     if str(point.get("year")) == "2024":
                         valor = point.get("value")
 
@@ -50,7 +52,6 @@ def extrair_dados(org_id):
                             escopo1 = valor
 
                         elif "escopo 2" in name:
-                            # pega o maior se tiver mais de um (market/location)
                             if escopo2 is None or valor > escopo2:
                                 escopo2 = valor
 
@@ -81,7 +82,6 @@ def main():
     ids = df.iloc[:, 0].astype(str).str.zfill(4).tolist()
 
     resultados = []
-
     total_ids = len(ids)
 
     for i, org_id in enumerate(ids, 1):
@@ -99,14 +99,14 @@ def main():
         else:
             print(f"– {org_id} sem dados 2024")
 
-        time.sleep(0.3)  # evita bloqueio
+        time.sleep(0.3)
 
     print("\n💾 SALVANDO RESULTADO...")
 
     df_final = pd.DataFrame(resultados)
     df_final.to_excel(OUTPUT_FILE, index=False)
 
-    print(f"\n✅ FINALIZADO! Arquivo gerado: {OUTPUT_FILE}")
+    print(f"\n✅ FINALIZADO: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
