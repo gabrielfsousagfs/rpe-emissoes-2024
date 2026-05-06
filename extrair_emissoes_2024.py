@@ -3,15 +3,38 @@ import time
 import csv
 import pandas as pd
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
 
 # ========================
 # CONFIG
 # ========================
 INPUT_FILE = "ids.xlsx"
 OUTPUT_FILE = "emissoes_2024.csv"
-SLEEP = 0.3
+SLEEP = 0.5
 
 BASE_URL = "https://registropublicodeemissoes.fgv.br/estatistica/estatistica-participantes/{}"
+
+# ========================
+# TLS FIX (ESSENCIAL)
+# ========================
+class TLSAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+        kwargs['ssl_context'] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+session = requests.Session()
+session.mount("https://", TLSAdapter())
+
+# HEADERS de navegador real
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Connection": "keep-alive"
+})
 
 # ========================
 # FUNÇÕES
@@ -80,9 +103,6 @@ def main():
 
     df = pd.read_excel(INPUT_FILE)
 
-    if "ID" not in df.columns:
-        raise Exception("O Excel precisa ter uma coluna chamada 'ID'")
-
     ids = df["ID"].astype(str).str.zfill(4).tolist()
 
     print(f"Total de IDs: {len(ids)}\n")
@@ -95,7 +115,7 @@ def main():
             url = BASE_URL.format(participant_id)
 
             try:
-                response = requests.get(url, timeout=10)
+                response = session.get(url, timeout=15)
 
                 if response.status_code != 200:
                     print(f"✖ {participant_id} sem página")
