@@ -1,8 +1,7 @@
-import pandas as pd
 import requests
 import time
 
-INPUT_FILE = "ids.xlsx"
+INPUT_FILE = "ids.txt"
 OUTPUT_FILE = "emissoes_2024.csv"
 
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
@@ -20,92 +19,85 @@ def extrair_emissoes(data_json):
     try:
         items = data_json["result"]["items"]
 
-        escopo1 = 0
-        escopo2 = 0
-        escopo3 = 0
+        e1 = e2 = e3 = 0
 
         for item in items:
-            nome = item["context"]["name"].strip()
+            nome = item["context"]["name"]
 
             for d in item["data"]:
                 if d["year"] == 2024:
                     if "1" in nome:
-                        escopo1 = d["value"]
+                        e1 = d["value"]
                     elif "2" in nome:
-                        escopo2 = d["value"]
+                        e2 = d["value"]
                     elif "3" in nome:
-                        escopo3 = d["value"]
+                        e3 = d["value"]
 
-        total = escopo1 + escopo2 + escopo3
-
-        return escopo1, escopo2, escopo3, total
+        return e1, e2, e3, e1 + e2 + e3
 
     except:
         return None, None, None, None
 
 
+def fazer_request(org_id, tentativas=3):
+    for tentativa in range(tentativas):
+        try:
+            payload = {"organizationId": int(org_id)}
+
+            response = requests.post(
+                URL,
+                json=payload,
+                headers=HEADERS,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                return response.json()
+
+        except Exception as e:
+            print(f"⚠️ erro tentativa {tentativa+1} para {org_id}")
+
+        time.sleep(2)
+
+    return None
+
+
 def main():
-    print("LENDO IDs DO EXCEL...\n")
+    print("LENDO IDs...\n")
 
-    df = pd.read_excel(INPUT_FILE)
+    with open(INPUT_FILE, "r") as f:
+        ids = [linha.strip() for linha in f if linha.strip()]
 
-    # 🔥 AJUSTE AQUI
-    if "ID" in df.columns:
-        id_col = "ID"
-    else:
-        id_col = df.columns[0]  # fallback automático
-
-    print(f"Usando coluna: {id_col}\n")
-
+    total_ids = len(ids)
     resultados = []
-    total_ids = len(df)
 
-    for i, row in df.iterrows():
-        org_id = str(row[id_col]).split(".")[0].zfill(4)
+    for i, org_id in enumerate(ids):
+        org_id = org_id.zfill(4)
 
         print(f"→ {org_id} ({i+1}/{total_ids})")
 
-        try:
-            payload = {
-                "organizationId": int(org_id)
-            }
+        data = fazer_request(org_id)
 
-            response = requests.post(URL, json=payload, headers=HEADERS, timeout=30)
+        if not data or not data.get("success"):
+            print("✖ falha na API")
+            continue
 
-            if response.status_code != 200:
-                print(f"✖ erro HTTP {response.status_code}")
-                continue
+        e1, e2, e3, total = extrair_emissoes(data)
 
-            data = response.json()
+        if total:
+            print(f"✔ total: {total:,.2f}")
+        else:
+            print("– sem dados 2024")
 
-            if not data.get("success"):
-                print("✖ resposta sem sucesso")
-                continue
+        resultados.append(f"{org_id},{e1},{e2},{e3},{total}")
 
-            e1, e2, e3, total = extrair_emissoes(data)
+        time.sleep(0.5)
 
-            if total == 0 or total is None:
-                print("– sem dados 2024")
-            else:
-                print(f"✔ total: {total:,.2f}")
+    print("\nSALVANDO...")
 
-            resultados.append({
-                "ID": org_id,
-                "Escopo 1": e1,
-                "Escopo 2": e2,
-                "Escopo 3": e3,
-                "Total 2024": total
-            })
-
-            time.sleep(0.5)
-
-        except Exception as e:
-            print(f"Erro {org_id}: {e}")
-
-    print("\nSALVANDO RESULTADO...")
-
-    df_out = pd.DataFrame(resultados)
-    df_out.to_csv(OUTPUT_FILE, index=False)
+    with open(OUTPUT_FILE, "w") as f:
+        f.write("ID,Escopo1,Escopo2,Escopo3,Total2024\n")
+        f.write("\n".join(resultados))
 
     print("FINALIZADO 🚀")
 
