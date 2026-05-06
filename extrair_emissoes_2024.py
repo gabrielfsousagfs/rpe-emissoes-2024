@@ -1,106 +1,106 @@
 import pandas as pd
+import requests
 import time
-from curl_cffi import requests  # 🔥 IMPORTANTE
 
 INPUT_FILE = "ids.xlsx"
-OUTPUT_FILE = "emissoes_2024.xlsx"
+OUTPUT_FILE = "emissoes_2024.csv"
 
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
 
-def extrair_dados(org_id):
+HEADERS = {
+    "Accept": "text/plain",
+    "Content-Type": "application/json-patch+json",
+    "Origin": "https://registropublicodeemissoes.fgv.br",
+    "Referer": "https://registropublicodeemissoes.fgv.br/",
+    "User-Agent": "Mozilla/5.0"
+}
+
+
+def extrair_emissoes(data_json):
     try:
-        response = requests.post(
-            URL,
-            impersonate="chrome",  # 🔥 resolve handshake
-            headers={
-                "Accept": "text/plain",
-                "Content-Type": "application/json-patch+json",
-                "Origin": "https://registropublicodeemissoes.fgv.br",
-                "Referer": "https://registropublicodeemissoes.fgv.br/"
-            },
-            json={"organizationId": int(org_id)},
-            timeout=30
-        )
+        items = data_json["result"]["items"]
 
-        if response.status_code != 200:
-            print(f"✖ {org_id} status {response.status_code}")
-            return None
+        escopo1 = 0
+        escopo2 = 0
+        escopo3 = 0
 
-        data = response.json()
-        charts = data.get("result", {}).get("charts", [])
+        for item in items:
+            nome = item["context"]["name"].strip()
 
-        if not charts:
-            return None
+            for d in item["data"]:
+                if d["year"] == 2024:
+                    if "1" in nome:
+                        escopo1 = d["value"]
+                    elif "2" in nome:
+                        escopo2 = d["value"]
+                    elif "3" in nome:
+                        escopo3 = d["value"]
 
-        escopo1 = None
-        escopo2 = None
-        escopo3 = None
+        total = escopo1 + escopo2 + escopo3
 
-        for chart in charts:
-            name = chart.get("name", "").lower()
+        return escopo1, escopo2, escopo3, total
 
-            for serie in chart.get("series", []):
-                for point in serie.get("data", []):
-
-                    if str(point.get("year")) == "2024":
-                        valor = point.get("value")
-
-                        if "escopo 1" in name:
-                            escopo1 = valor
-
-                        elif "escopo 2" in name:
-                            if escopo2 is None or valor > escopo2:
-                                escopo2 = valor
-
-                        elif "escopo 3" in name:
-                            escopo3 = valor
-
-        if escopo1 is None and escopo2 is None and escopo3 is None:
-            return None
-
-        total = (escopo1 or 0) + (escopo2 or 0) + (escopo3 or 0)
-
-        return {
-            "Escopo 1": escopo1,
-            "Escopo 2": escopo2,
-            "Escopo 3": escopo3,
-            "Total 2024": total
-        }
-
-    except Exception as e:
-        print(f"Erro {org_id}: {e}")
-        return None
+    except:
+        return None, None, None, None
 
 
 def main():
-    print("📥 LENDO IDs...\n")
+    print("LENDO IDs DO EXCEL...\n")
 
     df = pd.read_excel(INPUT_FILE)
-    ids = df.iloc[:, 0].astype(str).str.zfill(4).tolist()
 
     resultados = []
-    total_ids = len(ids)
 
-    for i, org_id in enumerate(ids, 1):
-        print(f"🔎 {org_id} ({i}/{total_ids})")
+    total_ids = len(df)
 
-        dados = extrair_dados(org_id)
+    for i, row in df.iterrows():
+        org_id = str(row[0]).zfill(4)
 
-        if dados:
-            print(f"✔ {org_id} OK")
+        print(f"→ {org_id} ({i+1}/{total_ids})")
+
+        try:
+            payload = {
+                "organizationId": int(org_id)
+            }
+
+            response = requests.post(URL, json=payload, headers=HEADERS, timeout=30)
+
+            if response.status_code != 200:
+                print(f"✖ erro HTTP {response.status_code}")
+                continue
+
+            data = response.json()
+
+            if not data.get("success"):
+                print("✖ resposta sem sucesso")
+                continue
+
+            e1, e2, e3, total = extrair_emissoes(data)
+
+            if total == 0 or total is None:
+                print("– sem dados 2024")
+            else:
+                print(f"✔ total: {total:,.2f}")
+
             resultados.append({
                 "ID": org_id,
-                **dados
+                "Escopo 1": e1,
+                "Escopo 2": e2,
+                "Escopo 3": e3,
+                "Total 2024": total
             })
-        else:
-            print(f"– {org_id} sem dados")
 
-        time.sleep(0.4)
+            time.sleep(0.5)
 
-    df_final = pd.DataFrame(resultados)
-    df_final.to_excel(OUTPUT_FILE, index=False)
+        except Exception as e:
+            print(f"Erro {org_id}: {e}")
 
-    print("\n✅ FINALIZADO!")
+    print("\nSALVANDO RESULTADO...")
+
+    df_out = pd.DataFrame(resultados)
+    df_out.to_csv(OUTPUT_FILE, index=False)
+
+    print("FINALIZADO 🚀")
 
 
 if __name__ == "__main__":
