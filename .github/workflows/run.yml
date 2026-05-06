@@ -16,7 +16,7 @@ jobs:
 
       - name: Instalar Playwright
         run: |
-          pip install playwright
+          pip install pandas playwright
           playwright install chromium
 
       - name: Rodar script
