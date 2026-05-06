@@ -4,26 +4,25 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-script:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Instalar dependências
         run: |
-          pip install requests
+          pip install playwright
+          playwright install chromium
 
       - name: Rodar script
         run: python -u extrair_emissoes_2024.py
 
-      - name: Upload do resultado
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: emissoes-2024
