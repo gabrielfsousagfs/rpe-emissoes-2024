@@ -49,12 +49,19 @@ def main():
 
     df = pd.read_excel(INPUT_FILE)
 
-    resultados = []
+    # 🔥 AJUSTE AQUI
+    if "ID" in df.columns:
+        id_col = "ID"
+    else:
+        id_col = df.columns[0]  # fallback automático
 
+    print(f"Usando coluna: {id_col}\n")
+
+    resultados = []
     total_ids = len(df)
 
     for i, row in df.iterrows():
-        org_id = str(row[0]).zfill(4)
+        org_id = str(row[id_col]).split(".")[0].zfill(4)
 
         print(f"→ {org_id} ({i+1}/{total_ids})")
 
