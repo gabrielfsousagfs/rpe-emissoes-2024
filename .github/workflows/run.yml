@@ -1,31 +1,31 @@
-name: Extrair Emissões 2024
+name: Extrair Emissões 2024 (IDs do Excel)
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-script:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          pip install pandas playwright openpyxl
-          playwright install --with-deps chromium
+          pip install requests beautifulsoup4 pandas openpyxl
 
       - name: Run script
-        run: python -u extrair_emissoes_2024.py
+        run: |
+          python -u extrair_emissoes_2024.py
 
-      - name: Upload resultado
+      - name: Upload CSV
         uses: actions/upload-artifact@v4
         with:
-          name: emissoes-2024
+          name: emissoes_2024
           path: emissoes_2024.csv
