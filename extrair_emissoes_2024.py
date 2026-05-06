@@ -39,7 +39,7 @@ async def buscar_dados(request, org_id):
     except Exception as e:
         print(f"Erro {org_id}: {e}")
         return None
-
+    print(await response.text())
 
 def extrair_2024(data):
     try:
