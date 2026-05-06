@@ -18,17 +18,18 @@ HEADERS = {
 }
 
 
+# ✅ ENDPOINTS CORRETOS
 async def inicializar_sessao(request, org_id):
     try:
-        # 1️⃣ GetYearRange
+        # 1️⃣ GetYearRange (CORRETO)
         await request.get(
-            f"{BASE_URL}/api/services/app/EmissionsChart/GetYearRangeByOrganization?organizationId={int(org_id)}",
+            f"{BASE_URL}/api/services/app/EstatisticaPublica/GetYearRangeByOrganization?organizationId={int(org_id)}",
             headers=HEADERS
         )
 
-        # 2️⃣ GetAllScopes
+        # 2️⃣ GetAllScopes (CORRETO)
         await request.get(
-            f"{BASE_URL}/api/services/app/EmissionsChart/GetAllScopes",
+            f"{BASE_URL}/api/services/app/EstatisticaPublica/GetAllScopes",
             headers=HEADERS
         )
 
@@ -55,14 +56,14 @@ async def buscar_dados(request, org_id):
             print(f"✖ {org_id} status {response.status}")
             return None
 
-        data = await response.json()
-        return data
+        return await response.json()
 
     except Exception as e:
         print(f"Erro {org_id}: {e}")
         return None
 
 
+# ✅ EXTRAÇÃO ROBUSTA
 def extrair_2024(data):
     try:
         items = data["result"]["items"]
@@ -70,27 +71,27 @@ def extrair_2024(data):
         esc1 = esc2 = esc3 = None
 
         for item in items:
-            nome = item["context"]["name"]
+            scope_id = item["context"]["id"]
 
             for d in item["data"]:
                 if d["year"] == 2024:
-                    if "1" in nome:
+                    if scope_id == 1:
                         esc1 = d["value"]
-                    elif "2" in nome:
+                    elif scope_id == 2:
                         esc2 = d["value"]
-                    elif "3" in nome:
+                    elif scope_id == 3:
                         esc3 = d["value"]
 
         return esc1, esc2, esc3
 
-    except:
+    except Exception as e:
+        print("Erro parsing:", e)
         return None, None, None
 
 
 async def main():
     print("INICIANDO...")
 
-    # Ler IDs
     with open(INPUT_FILE, "r") as f:
         ids = [linha.strip().zfill(4) for linha in f if linha.strip()]
 
@@ -104,13 +105,12 @@ async def main():
         for i, org_id in enumerate(ids):
             print(f"→ {org_id} ({i+1}/{total})")
 
-            # 🔑 Inicializa sessão (ESSENCIAL)
+            # 🔑 inicialização correta
             ok = await inicializar_sessao(context, org_id)
             if not ok:
                 print("✖ erro inicialização")
                 continue
 
-            # 📊 Busca dados
             data = await buscar_dados(context, org_id)
 
             if not data or not data.get("result"):
@@ -131,7 +131,7 @@ async def main():
                 "total": (esc1 or 0) + (esc2 or 0) + (esc3 or 0)
             })
 
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.3)
 
     print("SALVANDO RESULTADO...")
 
