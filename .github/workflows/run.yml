@@ -4,26 +4,29 @@ on:
   workflow_dispatch:
 
 jobs:
-  run:
+  run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install deps
+      - name: Instalar dependências
         run: |
-          pip install pandas openpyxl curl_cffi
+          pip install pandas
+          pip install openpyxl
+          pip install requests
 
-      - name: Run script
+      - name: Rodar script
         run: python -u extrair_emissoes_2024.py
 
-      - name: Upload resultado
+      - name: Upload do resultado
         uses: actions/upload-artifact@v4
         with:
           name: emissoes-2024
-          path: emissoes_2024.xlsx
+          path: emissoes_2024.csv
