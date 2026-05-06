@@ -1,4 +1,6 @@
 import asyncio
+import json
+import pandas as pd
 from playwright.async_api import async_playwright
 
 INPUT_FILE = "ids.txt"
@@ -6,12 +8,46 @@ OUTPUT_FILE = "emissoes_2024.csv"
 
 URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
 
+HEADERS = {
+    "Accept": "text/plain",
+    "Content-Type": "application/json-patch+json",
+    "Origin": "https://registropublicodeemissoes.fgv.br",
+    "Referer": "https://registropublicodeemissoes.fgv.br/",
+    "User-Agent": "Mozilla/5.0"
+}
 
-def extrair_emissoes(data):
+
+async def buscar_dados(request, org_id):
+    payload = {
+        "organizationId": int(org_id)
+    }
+
+    try:
+        response = await request.post(
+            URL,
+            headers=HEADERS,
+            data=json.dumps(payload)  # 👈 CORREÇÃO AQUI
+        )
+
+        if response.status != 200:
+            print(f"✖ {org_id} status {response.status}")
+            return None
+
+        data = await response.json()
+        return data
+
+    except Exception as e:
+        print(f"Erro {org_id}: {e}")
+        return None
+
+
+def extrair_2024(data):
     try:
         items = data["result"]["items"]
 
-        e1 = e2 = e3 = 0
+        escopo1 = None
+        escopo2 = None
+        escopo3 = None
 
         for item in items:
             nome = item["context"]["name"]
@@ -19,96 +55,64 @@ def extrair_emissoes(data):
             for d in item["data"]:
                 if d["year"] == 2024:
                     if "1" in nome:
-                        e1 = d["value"]
+                        escopo1 = d["value"]
                     elif "2" in nome:
-                        e2 = d["value"]
+                        escopo2 = d["value"]
                     elif "3" in nome:
-                        e3 = d["value"]
+                        escopo3 = d["value"]
 
-        return e1, e2, e3, e1 + e2 + e3
+        return escopo1, escopo2, escopo3
 
-    except Exception as e:
-        print("Erro parsing:", e)
-        return None, None, None, None
+    except:
+        return None, None, None
 
 
 async def main():
-    print("INICIANDO...\n")
+    print("INICIANDO...")
 
     # Lê IDs
-    with open(INPUT_FILE) as f:
-        ids = [i.strip() for i in f if i.strip()]
+    with open(INPUT_FILE, "r") as f:
+        ids = [linha.strip().zfill(4) for linha in f if linha.strip()]
 
     resultados = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        context = await p.request.new_context()
 
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-        )
-
-        page = await context.new_page()
-
-        # 🔥 MUITO IMPORTANTE: inicia sessão no site
-        await page.goto("https://registropublicodeemissoes.fgv.br/")
-        await asyncio.sleep(2)
-
-        request = context.request
+        total = len(ids)
 
         for i, org_id in enumerate(ids):
-            org_id = org_id.zfill(4)
+            print(f"→ {org_id} ({i+1}/{total})")
 
-            print(f"\n→ {org_id} ({i+1}/{len(ids)})")
+            data = await buscar_dados(context, org_id)
 
-            try:
-                response = await request.post(
-                    URL,
-                    json={"organizationId": int(org_id)},
-                    headers={
-                        "Content-Type": "application/json-patch+json",
-                        "Accept": "application/json, text/plain, */*"
-                    }
-                )
+            if not data or not data.get("result"):
+                print("✖ sem dados")
+                continue
 
-                print("STATUS:", response.status)
+            esc1, esc2, esc3 = extrair_2024(data)
 
-                text = await response.text()
-                print("RAW:", text[:300])  # DEBUG
+            if esc1 is None and esc2 is None and esc3 is None:
+                print("– sem dados 2024")
+                continue
 
-                if response.status != 200:
-                    print("✖ erro HTTP")
-                    continue
+            resultados.append({
+                "id": org_id,
+                "escopo_1": esc1,
+                "escopo_2": esc2,
+                "escopo_3": esc3,
+                "total": (esc1 or 0) + (esc2 or 0) + (esc3 or 0)
+            })
 
-                data = await response.json()
+            await asyncio.sleep(0.3)
 
-                if not data.get("success"):
-                    print("✖ sem sucesso na resposta")
-                    continue
+    print("SALVANDO RESULTADO...")
 
-                e1, e2, e3, total = extrair_emissoes(data)
-
-                if total:
-                    print(f"✔ total: {total:,.2f}")
-                else:
-                    print("– sem dados 2024")
-
-                resultados.append(f"{org_id},{e1},{e2},{e3},{total}")
-
-                await asyncio.sleep(0.5)
-
-            except Exception as e:
-                print(f"Erro {org_id}: {e}")
-
-        await browser.close()
-
-    print("\nSALVANDO RESULTADO...")
-
-    with open(OUTPUT_FILE, "w") as f:
-        f.write("ID,Escopo1,Escopo2,Escopo3,Total2024\n")
-        f.write("\n".join(resultados))
+    df = pd.DataFrame(resultados)
+    df.to_csv(OUTPUT_FILE, index=False)
 
     print("FINALIZADO 🚀")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
