@@ -6,15 +6,37 @@ from playwright.async_api import async_playwright
 INPUT_FILE = "ids.txt"
 OUTPUT_FILE = "emissoes_2024.csv"
 
-URL = "https://registropublicodeemissoesapi.fgv.br/api/services/app/EmissionsChart/ChartDataParticipant"
+BASE_URL = "https://registropublicodeemissoesapi.fgv.br"
 
 HEADERS = {
-    "Accept": "text/plain",
+    "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json-patch+json",
     "Origin": "https://registropublicodeemissoes.fgv.br",
     "Referer": "https://registropublicodeemissoes.fgv.br/",
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0",
+    "X-Requested-With": "XMLHttpRequest"
 }
+
+
+async def inicializar_sessao(request, org_id):
+    try:
+        # 1️⃣ GetYearRange
+        await request.get(
+            f"{BASE_URL}/api/services/app/EmissionsChart/GetYearRangeByOrganization?organizationId={int(org_id)}",
+            headers=HEADERS
+        )
+
+        # 2️⃣ GetAllScopes
+        await request.get(
+            f"{BASE_URL}/api/services/app/EmissionsChart/GetAllScopes",
+            headers=HEADERS
+        )
+
+        return True
+
+    except Exception as e:
+        print(f"Erro init {org_id}: {e}")
+        return False
 
 
 async def buscar_dados(request, org_id):
@@ -24,9 +46,9 @@ async def buscar_dados(request, org_id):
 
     try:
         response = await request.post(
-            URL,
+            f"{BASE_URL}/api/services/app/EmissionsChart/ChartDataParticipant",
             headers=HEADERS,
-            data=json.dumps(payload)  # 👈 CORREÇÃO AQUI
+            data=json.dumps(payload)
         )
 
         if response.status != 200:
@@ -39,15 +61,13 @@ async def buscar_dados(request, org_id):
     except Exception as e:
         print(f"Erro {org_id}: {e}")
         return None
-    print(await response.text())
+
 
 def extrair_2024(data):
     try:
         items = data["result"]["items"]
 
-        escopo1 = None
-        escopo2 = None
-        escopo3 = None
+        esc1 = esc2 = esc3 = None
 
         for item in items:
             nome = item["context"]["name"]
@@ -55,13 +75,13 @@ def extrair_2024(data):
             for d in item["data"]:
                 if d["year"] == 2024:
                     if "1" in nome:
-                        escopo1 = d["value"]
+                        esc1 = d["value"]
                     elif "2" in nome:
-                        escopo2 = d["value"]
+                        esc2 = d["value"]
                     elif "3" in nome:
-                        escopo3 = d["value"]
+                        esc3 = d["value"]
 
-        return escopo1, escopo2, escopo3
+        return esc1, esc2, esc3
 
     except:
         return None, None, None
@@ -70,7 +90,7 @@ def extrair_2024(data):
 async def main():
     print("INICIANDO...")
 
-    # Lê IDs
+    # Ler IDs
     with open(INPUT_FILE, "r") as f:
         ids = [linha.strip().zfill(4) for linha in f if linha.strip()]
 
@@ -84,6 +104,13 @@ async def main():
         for i, org_id in enumerate(ids):
             print(f"→ {org_id} ({i+1}/{total})")
 
+            # 🔑 Inicializa sessão (ESSENCIAL)
+            ok = await inicializar_sessao(context, org_id)
+            if not ok:
+                print("✖ erro inicialização")
+                continue
+
+            # 📊 Busca dados
             data = await buscar_dados(context, org_id)
 
             if not data or not data.get("result"):
@@ -104,7 +131,7 @@ async def main():
                 "total": (esc1 or 0) + (esc2 or 0) + (esc3 or 0)
             })
 
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.4)
 
     print("SALVANDO RESULTADO...")
 
