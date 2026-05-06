@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências
+      - name: Instalar Playwright
         run: |
           pip install playwright
           playwright install chromium
@@ -22,7 +22,7 @@ jobs:
       - name: Rodar script
         run: python -u extrair_emissoes_2024.py
 
-      - name: Upload
+      - name: Upload resultado
         uses: actions/upload-artifact@v4
         with:
           name: emissoes-2024
