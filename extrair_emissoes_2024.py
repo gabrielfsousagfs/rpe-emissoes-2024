@@ -1,12 +1,14 @@
-import asyncio
+import argparse
+import csv
 import json
-import pandas as pd
-from playwright.async_api import async_playwright
+import time
+import urllib.error
+import urllib.request
+from typing import Any
 
-INPUT_FILE = "ids.txt"
-OUTPUT_FILE = "emissoes_2024.csv"
 
 BASE_URL = "https://registropublicodeemissoesapi.fgv.br"
+DEFAULT_YEAR = 2024
 
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -14,166 +16,265 @@ HEADERS = {
     "Origin": "https://registropublicodeemissoes.fgv.br",
     "Referer": "https://registropublicodeemissoes.fgv.br/",
     "User-Agent": "Mozilla/5.0",
-    "X-Requested-With": "XMLHttpRequest"
+    "X-Requested-With": "XMLHttpRequest",
 }
 
 
-async def inicializar_sessao(request, org_id):
-    try:
-        print(f"  🔹 INIT sessão para {org_id}")
-
-        # 1️⃣ GetYearRange
-        url1 = f"{BASE_URL}/api/services/app/EstatisticaPublica/GetYearRangeByOrganization?organizationId={int(org_id)}"
-        r1 = await request.get(url1, headers=HEADERS)
-        print(f"    GetYearRange status: {r1.status}")
-
-        txt1 = await r1.text()
-        print(f"    GetYearRange resposta (resumo): {txt1[:200]}")
-
-        # 2️⃣ GetAllScopes
-        url2 = f"{BASE_URL}/api/services/app/EstatisticaPublica/GetAllScopes"
-        r2 = await request.get(url2, headers=HEADERS)
-        print(f"    GetAllScopes status: {r2.status}")
-
-        txt2 = await r2.text()
-        print(f"    GetAllScopes resposta (resumo): {txt2[:200]}")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Erro init {org_id}: {e}")
-        return False
+def carregar_ids(caminho: str) -> list[str]:
+    """Carrega IDs de empresas, um por linha, ignorando linhas vazias."""
+    with open(caminho, "r", encoding="utf-8") as arquivo:
+        return [linha.strip() for linha in arquivo if linha.strip()]
 
 
-async def buscar_dados(request, org_id):
-    payload = {
-        "organizationId": int(org_id)
-    }
+def fazer_requisicao(
+    url: str,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 60,
+) -> tuple[int, str]:
+    """Faz uma requisição HTTP e retorna status e corpo como texto."""
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
 
-    print(f"  🔹 POST ChartData para {org_id}")
-    print(f"    Payload: {payload}")
+    request = urllib.request.Request(
+        url=url,
+        data=data,
+        headers=HEADERS,
+        method=method,
+    )
 
     try:
-        response = await request.post(
-            f"{BASE_URL}/api/services/app/EmissionsChart/ChartDataParticipant",
-            headers=HEADERS,
-            data=json.dumps(payload)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            return response.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return exc.code, body
+
+
+def inicializar_sessao(org_id: str) -> None:
+    """Replica chamadas iniciais feitas pela página antes do gráfico de emissões."""
+    url_year_range = (
+        f"{BASE_URL}/api/services/app/EstatisticaPublica/"
+        f"GetYearRangeByOrganization?organizationId={int(org_id)}"
+    )
+    status, body = fazer_requisicao(url_year_range)
+    if status != 200:
+        raise RuntimeError(f"GetYearRange retornou HTTP {status}: {body[:300]}")
+
+    url_scopes = f"{BASE_URL}/api/services/app/EstatisticaPublica/GetAllScopes"
+    status, body = fazer_requisicao(url_scopes)
+    if status != 200:
+        raise RuntimeError(f"GetAllScopes retornou HTTP {status}: {body[:300]}")
+
+
+def buscar_chart_data(org_id: str) -> dict[str, Any]:
+    """Busca os dados de emissões de uma empresa na API pública do RPE."""
+    payload = {"organizationId": int(org_id)}
+    status, body = fazer_requisicao(
+        f"{BASE_URL}/api/services/app/EmissionsChart/ChartDataParticipant",
+        method="POST",
+        payload=payload,
+    )
+
+    if status != 200:
+        raise RuntimeError(
+            f"ChartDataParticipant retornou HTTP {status}: {body[:300]}"
         )
 
-        print(f"    Status: {response.status}")
+    data = json.loads(body)
 
-        text = await response.text()
-        print(f"    Resposta (primeiros 500 chars):\n{text[:500]}\n")
+    if not data.get("success"):
+        raise RuntimeError(f"API retornou success=false: {data}")
 
-        if response.status != 200:
-            print(f"❌ status inválido")
-            return None
+    if "result" not in data:
+        raise RuntimeError("Resposta sem campo result")
 
-        data = await response.json()
+    if "items" not in data["result"]:
+        raise RuntimeError("Resposta sem result.items")
 
-        # DEBUG estrutura
-        if "result" not in data:
-            print("❌ 'result' não encontrado na resposta")
-            return None
+    return data
 
-        if "items" not in data["result"]:
-            print("❌ 'items' não encontrado dentro de result")
-            print(data["result"])
-            return None
 
-        print(f"    ✔ items encontrados: {len(data['result']['items'])}")
-
-        return data
-
-    except Exception as e:
-        print(f"❌ Erro POST {org_id}: {e}")
+def truncar_valor(valor: float | int | None) -> int | None:
+    """Remove casas decimais sem arredondar."""
+    if valor is None:
         return None
 
+    return int(valor)
 
-def extrair_2024(data):
+
+def escopo_por_id_ou_descricao(item: dict[str, Any]) -> int | None:
+    """Identifica o escopo retornado pela API.
+
+    A API normalmente retorna context.id 1, 2 e 3. Como o Escopo 2 pode aparecer
+    em mais de uma variação, a descrição/nome também é usada como fallback.
+    """
+    context = item.get("context", {})
+    scope_id = context.get("id")
+
+    if scope_id in {1, 2, 3}:
+        return scope_id
+
+    texto_contexto = " ".join(
+        str(context.get(campo, "")) for campo in ("name", "desc")
+    ).lower()
+
+    if "escopo" in texto_contexto and "1" in texto_contexto:
+        return 1
+    if "escopo" in texto_contexto and "2" in texto_contexto:
+        return 2
+    if "escopo" in texto_contexto and "3" in texto_contexto:
+        return 3
+
+    return None
+
+
+def extrair_emissoes_ano(data: dict[str, Any], ano: int) -> dict[str, Any]:
+    """Extrai emissões do ano informado e soma Escopos 1, 2 e 3.
+
+    Quando houver mais de um valor para Escopo 2 no mesmo ano, mantém o maior.
+    """
+    resultado: dict[str, Any] = {
+        "nome_empresa": data["result"].get("name"),
+        "escopo_1": None,
+        "escopo_2": None,
+        "escopo_3": None,
+    }
+
+    for item in data["result"]["items"]:
+        scope_id = escopo_por_id_ou_descricao(item)
+        if scope_id not in {1, 2, 3}:
+            continue
+
+        for ponto in item.get("data", []):
+            if ponto.get("year") != ano or ponto.get("shouldNullify"):
+                continue
+
+            valor = ponto.get("value")
+            if valor is None:
+                continue
+
+            chave = f"escopo_{scope_id}"
+
+            if scope_id == 2:
+                valor_atual = resultado[chave]
+                resultado[chave] = (
+                    valor if valor_atual is None else max(valor_atual, valor)
+                )
+            else:
+                resultado[chave] = valor
+
+    valores = [resultado["escopo_1"], resultado["escopo_2"], resultado["escopo_3"]]
+
+    if all(valor is None for valor in valores):
+        resultado["total"] = None
+        resultado["status"] = f"sem_dados_{ano}"
+    else:
+        resultado["status"] = "ok"
+
+    resultado["escopo_1"] = truncar_valor(resultado["escopo_1"])
+    resultado["escopo_2"] = truncar_valor(resultado["escopo_2"])
+    resultado["escopo_3"] = truncar_valor(resultado["escopo_3"])
+
+    escopos_truncados = [
+        resultado["escopo_1"],
+        resultado["escopo_2"],
+        resultado["escopo_3"],
+    ]
+    if any(valor is not None for valor in escopos_truncados):
+        resultado["total"] = sum(valor or 0 for valor in escopos_truncados)
+
+    return resultado
+
+
+def processar_empresa(org_id: str, ano: int) -> dict[str, Any]:
+    """Processa uma empresa e sempre retorna uma linha para auditoria."""
+    linha: dict[str, Any] = {
+        "id": org_id,
+        "nome_empresa": None,
+        "ano": ano,
+        "escopo_1": None,
+        "escopo_2": None,
+        "escopo_3": None,
+        "total": None,
+        "status": None,
+        "erro": None,
+    }
+
     try:
-        items = data["result"]["items"]
+        inicializar_sessao(org_id)
+        data = buscar_chart_data(org_id)
+        linha.update(extrair_emissoes_ano(data, ano))
+    except Exception as exc:
+        linha["status"] = "erro"
+        linha["erro"] = str(exc)
 
-        esc1 = esc2 = esc3 = None
-
-        print("  🔹 EXTRAÇÃO")
-
-        for item in items:
-            scope_id = item["context"]["id"]
-            print(f"    Escopo encontrado: {scope_id}")
-
-            for d in item["data"]:
-                if d["year"] == 2024:
-                    print(f"      ✔ 2024 encontrado no escopo {scope_id}: {d['value']}")
-
-                    if scope_id == 1:
-                        esc1 = d["value"]
-                    elif scope_id == 2:
-                        esc2 = d["value"]
-                    elif scope_id == 3:
-                        esc3 = d["value"]
-
-        print(f"    Resultado extração: S1={esc1}, S2={esc2}, S3={esc3}")
-
-        return esc1, esc2, esc3
-
-    except Exception as e:
-        print("❌ Erro parsing:", e)
-        return None, None, None
+    return linha
 
 
-async def main():
-    print("🚀 INICIANDO DEBUG COMPLETO...\n")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Extrai emissões totais de empresas no Registro Público de Emissões."
+    )
+    parser.add_argument(
+        "--input", default="ids.txt", help="Arquivo TXT com um ID por linha."
+    )
+    parser.add_argument(
+        "--output", default="emissoes_2024.csv", help="Arquivo CSV de saída."
+    )
+    parser.add_argument("--ano", type=int, default=DEFAULT_YEAR, help="Ano a extrair.")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.5,
+        help="Pausa em segundos entre empresas para reduzir carga na API.",
+    )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Finaliza com erro se alguma empresa ficar com status erro.",
+    )
+    args = parser.parse_args()
 
-    with open(INPUT_FILE, "r") as f:
-        ids = [linha.strip().zfill(4) for linha in f if linha.strip()]
-
+    ids = carregar_ids(args.input)
     resultados = []
 
-    async with async_playwright() as p:
-        context = await p.request.new_context()
+    total = len(ids)
+    for indice, org_id in enumerate(ids, start=1):
+        print(f"Processando {org_id} ({indice}/{total})")
+        resultado = processar_empresa(org_id, args.ano)
+        resultados.append(resultado)
+        time.sleep(args.delay)
 
-        total = len(ids)
+    colunas = [
+        "id",
+        "nome_empresa",
+        "ano",
+        "escopo_1",
+        "escopo_2",
+        "escopo_3",
+        "total",
+        "status",
+        "erro",
+    ]
+    with open(args.output, "w", encoding="utf-8", newline="") as arquivo:
+        writer = csv.DictWriter(arquivo, fieldnames=colunas)
+        writer.writeheader()
+        writer.writerows(resultados)
 
-        for i, org_id in enumerate(ids):
-            print("\n" + "="*60)
-            print(f"→ PROCESSANDO {org_id} ({i+1}/{total})")
-            print("="*60)
+    print(f"Arquivo salvo em: {args.output}")
 
-            ok = await inicializar_sessao(context, org_id)
-            if not ok:
-                print("❌ falha na inicialização")
-                continue
+    erros = sum(1 for linha in resultados if linha["status"] == "erro")
+    sem_dados = sum(
+        1 for linha in resultados if linha["status"] == f"sem_dados_{args.ano}"
+    )
+    print(f"Resumo: {len(resultados)} empresas, {erros} erros, {sem_dados} sem dados.")
 
-            data = await buscar_dados(context, org_id)
-
-            if not data:
-                print("❌ sem resposta válida")
-                continue
-
-            esc1, esc2, esc3 = extrair_2024(data)
-
-            if esc1 is None and esc2 is None and esc3 is None:
-                print("⚠️ SEM DADOS 2024 DETECTADO")
-                continue
-
-            resultados.append({
-                "id": org_id,
-                "escopo_1": esc1,
-                "escopo_2": esc2,
-                "escopo_3": esc3,
-                "total": (esc1 or 0) + (esc2 or 0) + (esc3 or 0)
-            })
-
-            await asyncio.sleep(0.5)
-
-    print("\n💾 SALVANDO RESULTADO...")
-
-    df = pd.DataFrame(resultados)
-    df.to_csv(OUTPUT_FILE, index=False)
-
-    print("✅ FINALIZADO")
+    if args.fail_on_error and erros:
+        raise SystemExit(f"Extração finalizada com {erros} erro(s).")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
