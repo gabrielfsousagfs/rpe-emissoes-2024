@@ -190,6 +190,7 @@ def coletar_anos(objeto: Any, ano_alvo: int) -> list[int]:
 
     return sorted(set(anos))
 
+    return int(valor)
 
 def extrair_anos_do_year_range(body: str, ano_alvo: int) -> list[int]:
     """Extrai a lista de anos que deve ser enviada ao ChartDataParticipant."""
@@ -290,6 +291,7 @@ def buscar_chart_data(org_id: str, anos: list[int]) -> dict[str, Any]:
 
     return data
 
+    return None
 
 def truncar_valor(valor: float | int | None) -> int | None:
     """Remove casas decimais sem arredondar."""
