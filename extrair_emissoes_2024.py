@@ -1,6 +1,8 @@
 import argparse
 import csv
 import json
+import ssl
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -26,13 +28,35 @@ def carregar_ids(caminho: str) -> list[str]:
         return [linha.strip() for linha in arquivo if linha.strip()]
 
 
-def fazer_requisicao(
+def criar_contexto_ssl() -> ssl.SSLContext:
+    """Cria contexto TLS compatível com servidores legados.
+
+    O endpoint da FGV pode falhar em ambientes com OpenSSL 3, como o GitHub
+    Actions, por rejeitar configurações TLS modernas durante o handshake.
+    Reduzimos o nível de segurança apenas para esta conexão pública de leitura.
+    """
+    contexto = ssl.create_default_context()
+    contexto.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    try:
+        contexto.set_ciphers("DEFAULT:@SECLEVEL=1")
+    except ssl.SSLError:
+        pass
+
+    legacy_server_connect = getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0)
+    if legacy_server_connect:
+        contexto.options |= legacy_server_connect
+
+    return contexto
+
+
+def fazer_requisicao_urllib(
     url: str,
-    method: str = "GET",
-    payload: dict[str, Any] | None = None,
-    timeout: int = 60,
+    method: str,
+    payload: dict[str, Any] | None,
+    timeout: int,
 ) -> tuple[int, str]:
-    """Faz uma requisição HTTP e retorna status e corpo como texto."""
+    """Faz uma requisição HTTP usando urllib e contexto TLS ajustado."""
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -45,12 +69,86 @@ def fazer_requisicao(
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(
+            request, timeout=timeout, context=criar_contexto_ssl()
+        ) as response:
             body = response.read().decode("utf-8")
             return response.status, body
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         return exc.code, body
+
+
+def fazer_requisicao_curl(
+    url: str,
+    method: str,
+    payload: dict[str, Any] | None,
+    timeout: int,
+) -> tuple[int, str]:
+    """Faz fallback via curl quando o handshake TLS do urllib falha."""
+    comando = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--http1.1",
+        "--tlsv1.2",
+        "--ciphers",
+        "DEFAULT:@SECLEVEL=1",
+        "--connect-timeout",
+        "30",
+        "--max-time",
+        str(timeout),
+        "--request",
+        method,
+    ]
+
+    for chave, valor in HEADERS.items():
+        comando.extend(["--header", f"{chave}: {valor}"])
+
+    if payload is not None:
+        comando.extend(["--data", json.dumps(payload)])
+
+    comando.extend(["--write-out", "\n%{http_code}", url])
+
+    resultado = subprocess.run(
+        comando,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout + 10,
+    )
+    saida = resultado.stdout
+
+    if not saida:
+        raise RuntimeError(f"curl falhou: {resultado.stderr.strip()}")
+
+    body, _, status_text = saida.rpartition("\n")
+    try:
+        status = int(status_text)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"curl retornou status inválido: {status_text}; stderr={resultado.stderr}"
+        ) from exc
+
+    if resultado.returncode != 0 and status == 0:
+        raise RuntimeError(f"curl falhou: {resultado.stderr.strip()}")
+
+    return status, body
+
+
+def fazer_requisicao(
+    url: str,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 60,
+) -> tuple[int, str]:
+    """Faz uma requisição HTTP e retorna status e corpo como texto."""
+    try:
+        return fazer_requisicao_urllib(url, method, payload, timeout)
+    except (ssl.SSLError, urllib.error.URLError, TimeoutError) as exc:
+        print(f"Aviso: urllib falhou para {url}: {exc}. Tentando fallback com curl.")
+        return fazer_requisicao_curl(url, method, payload, timeout)
 
 
 def inicializar_sessao(org_id: str) -> None:

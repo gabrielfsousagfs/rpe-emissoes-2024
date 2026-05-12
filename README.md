@@ -44,6 +44,32 @@ python extrair_emissoes_2024.py --input ids.txt --output emissoes_2024.csv --ano
 4. Ao final da execução, baixe o artefato **emissoes-2024**, que contém `emissoes_2024.csv`.
 5. O workflow falha se alguma empresa ficar com `status=erro`, mas ainda publica o CSV para auditoria.
 
+
+## Solução para erro de handshake TLS
+
+Se o GitHub Actions mostrar erro de handshake na etapa **Rodar extração**, a versão atual tenta duas rotas automaticamente:
+
+1. `urllib` com contexto TLS mais compatível com servidores legados.
+2. fallback com `curl` usando HTTP/1.1, TLS 1.2 e nível de segurança reduzido para a conexão pública da API.
+
+O workflow também imprime a versão do OpenSSL e do curl na etapa **Diagnosticar TLS**, o que ajuda a comparar o ambiente do GitHub Actions com uma execução local.
+
+## Como enviar as requisições da API para depuração
+
+A melhor forma é enviar o `Copy as cURL` das requisições principais, porque ele preserva método, URL, headers e payload:
+
+1. Abra a página da empresa no Chrome.
+2. Abra **DevTools > Network**.
+3. Marque **Preserve log** e filtre por **Fetch/XHR**.
+4. Recarregue a página.
+5. Para cada requisição abaixo, clique com o botão direito e escolha **Copy > Copy as cURL (bash)**:
+   - `GetYearRangeByOrganization?organizationId=...`
+   - `GetAllScopes`
+   - `ChartDataParticipant`
+6. Envie também o status HTTP e um trecho pequeno da resposta, se possível.
+
+Antes de enviar, remova cookies, tokens, `Authorization` ou qualquer header que pareça sensível. Se preferir, envie um HAR exportado do DevTools, mas o `Copy as cURL` das três chamadas acima costuma ser mais fácil de reutilizar.
+
 ## Regras de extração
 
 - O script usa apenas a biblioteca padrão do Python; não há dependências externas.
