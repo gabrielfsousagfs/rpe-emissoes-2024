@@ -1,0 +1,38 @@
+name: Extrair emissões 2024
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extrair:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Diagnosticar TLS
+        run: |
+          python -c "import ssl; print(ssl.OPENSSL_VERSION)"
+          curl --version
+
+      - name: Rodar extração
+        run: |
+          python extrair_emissoes_2024.py \
+            --input ids.txt \
+            --output emissoes_2024.csv \
+            --ano 2024 \
+            --delay 0.5 \
+            --fail-on-error
+
+      - name: Publicar CSV como artefato
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emissoes-2024
+          path: emissoes_2024.csv
