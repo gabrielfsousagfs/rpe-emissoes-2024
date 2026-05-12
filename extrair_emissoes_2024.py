@@ -13,10 +13,17 @@ BASE_URL = "https://registropublicodeemissoesapi.fgv.br"
 DEFAULT_YEAR = 2024
 
 HEADERS = {
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "text/plain",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
     "Content-Type": "application/json-patch+json",
+    "Expires": "Sat, 01 Jan 2000 00:00:00 GMT",
     "Origin": "https://registropublicodeemissoes.fgv.br",
+    "Pragma": "no-cache",
     "Referer": "https://registropublicodeemissoes.fgv.br/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
     "User-Agent": "Mozilla/5.0",
     "X-Requested-With": "XMLHttpRequest",
 }
@@ -151,7 +158,77 @@ def fazer_requisicao(
         return fazer_requisicao_curl(url, method, payload, timeout)
 
 
-def inicializar_sessao(org_id: str) -> None:
+def converter_ano(valor: Any, ano_alvo: int) -> int | None:
+    """Converte um valor para ano quando ele está no intervalo esperado."""
+    if isinstance(valor, bool):
+        return None
+
+    if isinstance(valor, str) and valor.isdigit():
+        valor = int(valor)
+
+    if isinstance(valor, int) and 1990 <= valor <= ano_alvo:
+        return valor
+
+    return None
+
+
+def coletar_anos(objeto: Any, ano_alvo: int) -> list[int]:
+    """Coleta valores que parecem anos dentro de uma resposta JSON."""
+    anos: list[int] = []
+
+    ano = converter_ano(objeto, ano_alvo)
+    if ano is not None:
+        return [ano]
+
+    if isinstance(objeto, list):
+        for item in objeto:
+            anos.extend(coletar_anos(item, ano_alvo))
+
+    if isinstance(objeto, dict):
+        for valor in objeto.values():
+            anos.extend(coletar_anos(valor, ano_alvo))
+
+    return sorted(set(anos))
+
+    return int(valor)
+
+def extrair_anos_do_year_range(body: str, ano_alvo: int) -> list[int]:
+    """Extrai a lista de anos que deve ser enviada ao ChartDataParticipant."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return [ano_alvo]
+
+    result = data.get("result", data)
+
+    if isinstance(result, dict):
+        for chave_anos in ("years", "anos", "availableYears", "yearRange"):
+            if chave_anos in result:
+                anos = coletar_anos(result[chave_anos], ano_alvo)
+                if anos:
+                    return anos
+
+        pares_inicio_fim = (
+            ("minYear", "maxYear"),
+            ("startYear", "endYear"),
+            ("initialYear", "finalYear"),
+            ("firstYear", "lastYear"),
+        )
+        for chave_inicio, chave_fim in pares_inicio_fim:
+            inicio = converter_ano(result.get(chave_inicio), ano_alvo)
+            fim = converter_ano(result.get(chave_fim), ano_alvo)
+            if inicio is not None and fim is not None:
+                if inicio <= fim:
+                    return list(range(inicio, fim + 1))
+
+    anos = coletar_anos(result, ano_alvo)
+    if len(anos) == 2 and anos[1] - anos[0] > 1:
+        return list(range(anos[0], anos[1] + 1))
+
+    return anos or [ano_alvo]
+
+
+def inicializar_sessao(org_id: str, ano: int) -> list[int]:
     """Replica chamadas iniciais feitas pela página antes do gráfico de emissões."""
     url_year_range = (
         f"{BASE_URL}/api/services/app/EstatisticaPublica/"
@@ -161,15 +238,35 @@ def inicializar_sessao(org_id: str) -> None:
     if status != 200:
         raise RuntimeError(f"GetYearRange retornou HTTP {status}: {body[:300]}")
 
+    anos = extrair_anos_do_year_range(body, ano)
+
     url_scopes = f"{BASE_URL}/api/services/app/EstatisticaPublica/GetAllScopes"
     status, body = fazer_requisicao(url_scopes)
     if status != 200:
         raise RuntimeError(f"GetAllScopes retornou HTTP {status}: {body[:300]}")
 
+    return anos
 
-def buscar_chart_data(org_id: str) -> dict[str, Any]:
+
+def montar_payload_chart_data(org_id: str, anos: list[int]) -> dict[str, Any]:
+    """Monta o payload observado na chamada real da página."""
+    return {
+        "organizationId": int(org_id),
+        "subFilter": {
+            "scopes": [1, 2, 3],
+            "categories": [],
+            "gases": [],
+            "emissionTypes": [],
+            "sectors": [],
+            "isSin": False,
+        },
+        "filter": {"years": anos},
+    }
+
+
+def buscar_chart_data(org_id: str, anos: list[int]) -> dict[str, Any]:
     """Busca os dados de emissões de uma empresa na API pública do RPE."""
-    payload = {"organizationId": int(org_id)}
+    payload = montar_payload_chart_data(org_id, anos)
     status, body = fazer_requisicao(
         f"{BASE_URL}/api/services/app/EmissionsChart/ChartDataParticipant",
         method="POST",
@@ -194,6 +291,7 @@ def buscar_chart_data(org_id: str) -> dict[str, Any]:
 
     return data
 
+    return None
 
 def truncar_valor(valor: float | int | None) -> int | None:
     """Remove casas decimais sem arredondar."""
@@ -302,8 +400,8 @@ def processar_empresa(org_id: str, ano: int) -> dict[str, Any]:
     }
 
     try:
-        inicializar_sessao(org_id)
-        data = buscar_chart_data(org_id)
+        anos = inicializar_sessao(org_id, ano)
+        data = buscar_chart_data(org_id, anos)
         linha.update(extrair_emissoes_ano(data, ano))
     except Exception as exc:
         linha["status"] = "erro"
@@ -333,6 +431,11 @@ def main() -> None:
         "--fail-on-error",
         action="store_true",
         help="Finaliza com erro se alguma empresa ficar com status erro.",
+    )
+    parser.add_argument(
+        "--fail-on-missing",
+        action="store_true",
+        help="Finaliza com erro se alguma empresa ficar sem dados para o ano.",
     )
     args = parser.parse_args()
 
@@ -372,6 +475,9 @@ def main() -> None:
 
     if args.fail_on_error and erros:
         raise SystemExit(f"Extração finalizada com {erros} erro(s).")
+
+    if args.fail_on_missing and sem_dados:
+        raise SystemExit(f"Extração finalizada com {sem_dados} empresa(s) sem dados.")
 
 
 if __name__ == "__main__":

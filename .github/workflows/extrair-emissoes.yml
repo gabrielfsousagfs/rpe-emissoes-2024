@@ -28,7 +28,8 @@ jobs:
             --output emissoes_2024.csv \
             --ano 2024 \
             --delay 0.5 \
-            --fail-on-error
+            --fail-on-error \
+            --fail-on-missing
 
       - name: Publicar CSV como artefato
         if: always()

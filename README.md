@@ -42,7 +42,7 @@ python extrair_emissoes_2024.py --input ids.txt --output emissoes_2024.csv --ano
 2. Selecione o workflow **Extrair emissões 2024**.
 3. Clique em **Run workflow**.
 4. Ao final da execução, baixe o artefato **emissoes-2024**, que contém `emissoes_2024.csv`.
-5. O workflow falha se alguma empresa ficar com `status=erro`, mas ainda publica o CSV para auditoria.
+5. O workflow falha se alguma empresa ficar com `status=erro` ou `status=sem_dados_2024`, mas ainda publica o CSV para auditoria.
 
 
 ## Solução para erro de handshake TLS
@@ -74,6 +74,7 @@ Antes de enviar, remova cookies, tokens, `Authorization` ou qualquer header que 
 
 - O script usa apenas a biblioteca padrão do Python; não há dependências externas.
 - O script usa a API pública `EmissionsChart/ChartDataParticipant` para cada ID.
+- O payload do `ChartDataParticipant` replica a chamada da página: envia `subFilter` com escopos `[1, 2, 3]` e `filter.years` com os anos retornados por `GetYearRangeByOrganization`. Isso evita respostas vazias/sem dados causadas por chamar o endpoint apenas com `organizationId`.
 - O total é calculado como `Escopo 1 + Escopo 2 + Escopo 3`.
 - Se a API retornar mais de uma opção de Escopo 2, o script usa o maior valor.
 - Os valores são truncados para inteiros, sem arredondamento e sem casas decimais.
